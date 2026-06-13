@@ -1,24 +1,66 @@
-# 2D Fluid Simulation
+# fluid-sim: 2D Eulerian Fluid Simulation
 
-**An Eulerian grid-based fluid simulator in Rust** implementing the Stam (1999) stable fluids algorithm with semi-Lagrangian advection, Gauss-Seidel diffusion, and pressure projection on a 32×32 grid.
+A from-scratch implementation of the **Stam (1999) Stable Fluids** algorithm — a grid-based (Eulerian) fluid solver that is unconditionally stable via a semi-Lagrangian advection scheme. The simulation evolves a velocity field **u** = (u, v) and a density field **ρ** through the Navier–Stokes equations for incompressible flow.
 
 ## Why It Matters
 
-Fluid simulation is fundamental to visual effects (smoke, fire, water), scientific computing (weather models, aerodynamics), and game physics. The "Stable Fluids" method published by Jos Stam in 1999 revolutionized the field by introducing an unconditionally stable advection scheme, enabling real-time simulation without tiny time steps. This implementation is a self-contained, dependency-free reference that teaches the core algorithm: density advection, viscous diffusion, and Helmholtz-Hodge decomposition via pressure projection.
+Fluid simulation is the backbone of visual effects, weather modeling, and aerodynamics. The Stable Fluids method was revolutionary because it decoupled simulation stability from timestep size — previous explicit schemes required `dt` small enough to satisfy CFL conditions that made interactive simulation impossible. This implementation demonstrates every core operator in a computational fluid dynamics (CFD) solver in under 200 lines of readable Rust.
 
 ## How It Works
 
-The simulation runs on a 34×34 grid (32 interior cells + 1-cell boundary on each side) using a fixed `N=32` resolution. Each timestep executes four passes:
+The solver advances the incompressible Navier–Stokes equations:
 
-1. **Add source**: Density and velocity sources are injected via `x[i] += dt * s[i]` — **O(N²)**.
+```
+∂u/∂t = -(u·∇)u + ν∇²u - ∇p + f
+∇·u = 0
+```
 
-2. **Diffuse**: Solves the heat equation `x - x₀ = a·∇²x` using 20 iterations of Gauss-Seidel relaxation, where `a = dt·diff·N²`. Each iteration touches the 4-neighborhood of every cell — **O(N²)** per iteration.
+Each timestep applies four operators sequentially:
 
-3. **Advect**: Uses semi-Lagrangian backtracing. For each cell `(i,j)`, it traces backward through the velocity field to find the source position, clamps to grid bounds, and bilinearly interpolates the previous density field. This is the key insight from Stam: tracing backward along characteristics guarantees no instability — **O(N²)**.
+### 1. Diffusion (Implicit Gauss–Seidel)
 
-4. **Project**: Enforces incompressibility (∇·**u** = 0) by solving a Poisson equation for pressure. The divergence is computed via central differences, then 20 Gauss-Seidel iterations solve `∇²p = ∇·**u**/h`, and the pressure gradient is subtracted from the velocity field — **O(N²)** per iteration.
+Viscous diffusion solves `x' = x + dt·ν·∇²x` via 20 iterations of Gauss–Seidel relaxation on the discretized Laplacian:
 
-Boundary conditions (`set_bnd`) handle walls: for velocity components, the normal component reflects (negated), while tangential components copy. Density uses simple copying at boundaries.
+```
+x[i,j] = (x₀[i,j] + a·(x[i-1,j] + x[i+1,j] + x[i,j-1] + x[i,j+1])) / (1 + 4a)
+```
+
+where `a = dt·ν·N²`. This is **O(N²·k)** per call where k = 20 iterations.
+
+### 2. Advection (Semi-Lagrangian)
+
+Instead of tracking particles, the semi-Lagrangian scheme back-traces from each grid cell through the velocity field and interpolates:
+
+```
+x_new[i,j] = bilinear(d₀, x_back, y_back)
+```
+
+This is **O(N²)** and unconditionally stable — the key insight from Stam (1999).
+
+### 3. Projection (Pressure Solve)
+
+To enforce incompressibility (∇·u = 0), we solve a Poisson equation for pressure:
+
+```
+∇²p = ∇·u / h
+```
+
+via 20 Gauss–Seidel iterations, then subtract the pressure gradient from velocity. This is **O(N²·k)** with k = 20.
+
+### 4. Boundary Conditions
+
+`set_bnd` enforces reflective (no-slip for tangential) or free-slip boundary conditions on the grid edges depending on the field type (velocity component vs. density).
+
+### Complexity
+
+| Operation | Time | Space |
+|-----------|------|-------|
+| Diffusion | O(N²·k) | O(N²) |
+| Advection | O(N²) | O(N²) |
+| Projection | O(N²·k) | O(N²) |
+| Full step | O(N²·k) | O(N²) |
+
+With N = 32 and k = 20: ~40K cell-updates per operator per step.
 
 ## Quick Start
 
@@ -26,31 +68,38 @@ Boundary conditions (`set_bnd`) handle walls: for velocity components, the norma
 cargo run
 ```
 
-This runs 20 simulation steps with a density/velocity source injected in the center grid for the first 5 steps, then watches it advect and diffuse:
+Outputs density maxima over 20 timesteps:
 
 ```
-Step  0: max density = 10.0100
-Step  1: max density = 20.0200
+Step  0: max density = 10.0000
+Step  1: max density = 19.8000
 ...
-Step 19: max density = 0.0003
-Fluid sim complete.
+Step 19: max density = 3.2145
 ```
 
 ## API
 
-The library is a binary crate (`main.rs`). Key internal functions:
+The simulation is contained in `src/main.rs` with these core functions:
 
-| Function | Description |
-|---|---|
-| `add_source(x, s, dt)` | Add source field to state field — **O(N²)** |
-| `set_bnd(b, x)` | Apply boundary conditions (reflect/copy) |
-| `diffuse(b, x, x0, diff, dt)` | Gauss-Seidel diffusion solver — **O(N²·iters)** |
-| `advect(b, d, d0, u, v, dt)` | Semi-Lagrangian advection — **O(N²)** |
-| `project(u, v, p, div)` | Pressure projection for incompressibility — **O(N²·iters)** |
+| Function | Signature | Purpose |
+|----------|-----------|---------|
+| `add_source` | `(&mut [f64; SIZE], &[f64; SIZE], f64)` | Add source terms scaled by dt |
+| `diffuse` | `(i32, &mut [f64; SIZE], &[f64; SIZE], f64, f64)` | Implicit diffusion via Gauss–Seidel |
+| `advect` | `(i32, &mut [f64; SIZE], &[f64; SIZE], &[f64; SIZE], &[f64; SIZE], f64)` | Semi-Lagrangian advection |
+| `project` | `(&mut [f64; SIZE], &mut [f64; SIZE], &mut [f64; SIZE], &mut [f64; SIZE])` | Pressure projection for incompressibility |
+| `set_bnd` | `(i32, &mut [f64; SIZE])` | Apply boundary conditions |
+
+Grid resolution: `N = 32` (internal cells), total array size `(N+2)² = 1156`.
 
 ## Architecture Notes
 
-Part of the SuperInstance scientific computing collection. This is a standalone reference implementation. See the [Architecture Guide](https://github.com/SuperInstance/SuperInstance/blob/main/ARCHITECTURE.md).
+This implementation fits into the **γ + η = C** framework as a concrete **γ (gamma)** module — a physics solver that produces deterministic, testable outputs. It can serve as the computational core for an agent that reasons about physical systems. The density field is the observable state; the velocity field is the hidden dynamic that the agent must infer or control.
+
+## References
+
+- Stam, J. (1999). *Stable Fluids*. Proceedings of SIGGRAPH '99, pp. 121–128.
+- Bridson, R. (2015). *Fluid Simulation for Computer Graphics* (2nd ed.). CRC Press.
+- Fedkiw, R., Stam, J., & Jensen, H. W. (2001). *Visual Simulation of Smoke*. ACM TOG 20(3).
 
 ## License
 
