@@ -95,6 +95,18 @@ Grid resolution: `N = 32` (internal cells), total array size `(N+2)² = 1156`.
 
 This implementation fits into the **γ + η = C** framework as a concrete **γ (gamma)** module — a physics solver that produces deterministic, testable outputs. It can serve as the computational core for an agent that reasons about physical systems. The density field is the observable state; the velocity field is the hidden dynamic that the agent must infer or control.
 
+### Numerical Parameters
+
+| Parameter | Value | Meaning |
+|-----------|-------|---------|
+| `N` | 32 | Grid resolution (32×32 internal cells) |
+| `dt` | 0.1 | Timestep (seconds) |
+| `diff` | 0.0001 | Density diffusion coefficient |
+| `visc` | 0.0 | Velocity viscosity (inviscid) |
+| Gauss–Seidel iterations | 20 | Per solve for diffusion and projection |
+
+With N = 32 and k = 20: ~40K cell-updates per operator per step.
+
 ## References
 
 - Stam, J. (1999). *Stable Fluids*. Proceedings of SIGGRAPH '99, pp. 121–128.
